@@ -13,7 +13,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 from pathlib import Path
 import os
 import environ
-
+import dj_database_url
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -30,8 +30,11 @@ MPESA_INITIATE_URL = env("MPESA_INITIATE_URL")
 MPESA_CALLBACK_URL = env("MPESA_CALLBACK_URL")
 MPESA_TOKEN_URL = env("MPESA_TOKEN_URL")
 
+DATABASE_URL = env("DATABASE_URL")
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
+
+
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = 'django-insecure-d^limqey4obr3^lt+2m6tv5-o%ap1^^8roztj05rj8t!+b#9ms'
@@ -95,10 +98,11 @@ WSGI_APPLICATION = 'api_pesa.wsgi.application'
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
+    'default': dj_database_url.config(
+        default=os.getenv("DATABASE_URL"),
+        conn_max_age=600,
+        ssl_require=True,
+    )
 }
 
 
