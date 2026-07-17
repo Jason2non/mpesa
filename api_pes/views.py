@@ -116,6 +116,8 @@ def initiate_stk_push(request):
         Transactions.objects.create(
             merchant_request_id=res_data.get("MerchantRequestID"),
             checkout_request_id=res_data.get("CheckoutRequestID"),
+            response_code=res_data.get("ResponseCode"),
+            response_description=res_data.get("ResponseDescription"),
             phone_number=phone_number,
             amount=amount,
             status='PENDING'
@@ -125,28 +127,41 @@ def initiate_stk_push(request):
 
 @csrf_exempt
 def mpesa_callback(request):
-    if request.method == "POST":
-        callback_data = json.loads(request.body)
-        stk_callback = callback_data['Body']['stkCallback']
-        result_code = stk_callback['ResultCode']
-        checkout_request_id = stk_callback['CheckoutRequestID']
-        try:
-            transaction = Transactions.objects.get(checkout_request_id=checkout_request_id)
-            if result_code == 0:
-                metadata = stk_callback['CallbackMetadata']['Item']
-                get_val = lambda name: next((item.get('Value') for item in metadata if item.get('Name') == name),None)
-                transaction.receipt_number = get_val('MpesaReceiptNumber')
-                transaction.status = 'SUCCESS'
-                transaction.result_desc = stk_callback['ResultDesc']
-            else:
-                transaction.status = 'FAILED'
-            transaction.result_desc = stk_callback['ResultDesc']
-            transaction.save()
-        except Transactions.DoesNotExist:
-            pass 
-        return JsonResponse({"ResultCode": 0, "ResultDesc": "Accepted Successfully"})
+    if request.method == "GET":
+        return JsonResponse({"message": "Callback endpoint running"})
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST requests allowed"}, status=405)
+    try:
+        callback = json.loads(request.body)
+        print(callback)
+        stk = callback["Body"]["stkCallback"]
+        checkout = stk["CheckoutRequestID"]
+        result_code = str(stk["ResultCode"])
+        transaction = Transactions.objects.get(
+            checkout_request_id=checkout
+        )
+        transaction.response_code = result_code
+        transaction.result_desc = stk["ResultDesc"]
+        if result_code == "0":
+            metadata = stk.get("CallbackMetadata", {}).get("Item", [])
+            def get_value(name):
+                return next((item.get("Value")for item in metadata if item["Name"] == name),None)
+            transaction.receipt_number = get_value("MpesaReceiptNumber")
+            transaction.phone_number = str(get_value("PhoneNumber"))
+            transaction.amount = get_value("Amount")
+            transaction.status = "SUCCESS"
+        else:
+            transaction.status = "FAILED"
+        transaction.save()
+    except Transactions.DoesNotExist:
+        print("Transaction not found")
+    except Exception as e:
+        print(e)
+    return JsonResponse({
+        "ResultCode": 0,
+        "ResultDesc": "Accepted"
+    })
 
 def home(request):
     collect = Transactions.objects.count()
-    return HttpResponse (f"Items on the list {collect}")
-
+    return HttpResponse (f"Num {collect}")

@@ -13,8 +13,6 @@ class Transactions(models.Model):
         ("pending","Pending"),
         ("failed","Failed")
     ]
-    merchant_request_id = models.CharField(max_length=100, default='Testing')
-    checkout_request_id = models.CharField(max_length=100, default='Testing')
     user = models.CharField(max_length=15)
     phone_number = models.CharField(max_length=15, validators=[phone_validator])
     amount = models.DecimalField(max_digits=10, decimal_places=2)
@@ -24,6 +22,8 @@ class Transactions(models.Model):
 
     merchant_request_id = models.CharField(max_length=100, null=True, blank=True)
     checkout_request_id = models.CharField(max_length=100, unique=True)
+    response_code = models.CharField(max_length=12, null=True, blank=True)
+    response_description=models.CharField(max_length=100, null=True, blank=True)
     phone_number = models.CharField(max_length=15)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     receipt_number = models.CharField(max_length=50, null=True, blank=True)
@@ -33,4 +33,4 @@ class Transactions(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return f", {phone}, Reference Number{reference_number}, {self.checkout_request_id} - {self.status}"
+        return f"{self.checkout_request_id} - {self.status}"
