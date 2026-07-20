@@ -15,35 +15,11 @@ from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
-"""def get_mpesa_token():
-    token_string = f"{settings.MPESA_CONSUMER_KEY}:{settings.MPESA_CONSUMER_SECRET}"
-    encoded_auth = base64.b64encode(token_string.encode()).decode("utf-8")
-    headers = {"Authorization": f"Basic {encoded_auth}"}
-
-    response = requests.post(settings.MPESA_TOKEN_URL, headers=headers)
-
-    print("TOKEN STATUS:", response.status_code)
-    print("TOKEN RESPONSE:", response.text)
-
-    response.raise_for_status()
-    return response.json()["access_token"]"""
-"""
-def get_mpesa_token():
-    response = requests.get(
-        "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials",
-        auth=(settings.MPESA_CONSUMER_KEY, settings.MPESA_CONSUMER_SECRET)
-    )
-    response.raise_for_status()
-    return response.json()["access_token"]"""
-
 def get_mpesa_token():
     consumer_key = settings.MPESA_CONSUMER_KEY
     consumer_secret = settings.MPESA_CONSUMER_SECRET
-
-    url = "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials"
-
+    url = settings.MPESA_TOKEN_URL
     response = requests.get(url, auth=(consumer_key, consumer_secret))
-
     print("TOKEN STATUS:", response.status_code)
     print("TOKEN RAW BODY:", repr(response.text))
 
@@ -53,7 +29,6 @@ def get_mpesa_token():
     access_token = data.get("access_token")
     if not access_token:
         raise ValueError(f"No access_token in response: {data}")
-
     return access_token
 
 """def get_mpesa_token():
@@ -85,7 +60,7 @@ def initiate_stk_push(request):
         "Password": password,
         "Timestamp": timestamp,
         "TransactionType": "CustomerPayBillOnline",
-        "Amount": amount,
+        "Amount": str(amount),
         "PartyA": phone_number,
         "PartyB": settings.MPESA_SHORTCODE,
         "PhoneNumber": phone_number,
@@ -122,45 +97,86 @@ def initiate_stk_push(request):
             amount=amount,
             status='PENDING'
         )
-
     return JsonResponse(res_data, status=response.status_code, safe=False)
 
 @csrf_exempt
 def mpesa_callback(request):
-    if request.method == "GET":
-        return JsonResponse({"message": "Callback endpoint running"})
-    if request.method != "POST":
-        return JsonResponse({"error": "Only POST requests allowed"}, status=405)
+    if not request.body:
+        logger.warning("Received an empty request body at M-Pesa callback endpoint.")
+        return JsonResponse({"ResultCode": 1, "ResultDesc": "Empty body received"}, status=400)
     try:
-        callback = json.loads(request.body)
-        print(callback)
-        stk = callback["Body"]["stkCallback"]
-        checkout = stk["CheckoutRequestID"]
-        result_code = str(stk["ResultCode"])
-        transaction = Transactions.objects.get(
-            checkout_request_id=checkout
+        # 2. Safely parse the json stream now that we know it's not blank
+        data = json.loads(request.body)
+        #print(data)
+    except json.JSONDecodeError:
+        logger.error("Failed to decode JSON. The payload received was not valid JSON data.")
+        return JsonResponse({"ResultCode": 1, "ResultDesc": "Invalid JSON format"}, status=400)
+    try:
+        # 1. Parse raw json stream payload from Safaricom POST request
+        data = json.loads(request.body)
+        stk_callback = data.get('Body', {}).get('stkCallback', {})
+        
+        # 2. Extract transaction reference indices
+        result_code = stk_callback.get('ResultCode')
+        checkout_id = stk_callback.get('CheckoutRequestID')
+        result_desc = stk_callback.get('ResultDesc')
+
+        # 3. Retrieve or create a transaction trace reference
+        transactions, created = Transactions.objects.get_or_create(
+            checkout_request_id=checkout_id
         )
-        transaction.response_code = result_code
-        transaction.result_desc = stk["ResultDesc"]
-        if result_code == "0":
-            metadata = stk.get("CallbackMetadata", {}).get("Item", [])
-            def get_value(name):
-                return next((item.get("Value")for item in metadata if item["Name"] == name),None)
-            transaction.receipt_number = get_value("MpesaReceiptNumber")
-            transaction.phone_number = str(get_value("PhoneNumber"))
-            transaction.amount = get_value("Amount")
-            transaction.status = "SUCCESS"
+        
+        transactions.result_code = result_code
+        transactions.result_description = result_desc
+
+        # ResultCode 0 represents user PIN entry validated & cash transfer approved
+        if result_code == 0:
+            metadata_items = stk_callback.get('CallbackMetadata', {}).get('Item', [])
+            # Convert Safaricom's list structural model into a standard key-value dictionary mapping
+            #metadata = {item['Name']: item.get('Value') for item in metadata_items if 'Value' in item}
+            
+            metadata = {}
+            for item in metadata_items:
+                name = item.get('Name')
+                # Use .get('Value') so it safely returns None instead of crashing if 'Value' is missing
+                value = item.get('Value') 
+                if name:
+                    metadata[name] = value
+            # Map parameters
+            transactions.amount = metadata.get('Amount')
+            transactions.mpesa_receipt_number = metadata.get('MpesaReceiptNumber')
+            transactions.phone_number = str(metadata.get('PhoneNumber'))
+            transactions.is_success = True
+            transactions.save()
+            
+            logger.info(f"Payment Confirmed: ID {checkout_id} | Receipt {transactions.mpesa_receipt_number}")
+            
+            # TODO: Safely execute post-payment tasks here (e.g. ship orders, send transactional mail)
+            
         else:
-            transaction.status = "FAILED"
-        transaction.save()
-    except Transactions.DoesNotExist:
-        print("Transaction not found")
+            # Code execution skips to here if user dropped the prompt or lacks sufficient funds
+            transactions.is_success = False
+            transactions.save()
+            logger.warning(f"Payment Unsuccessful: ID {checkout_id} | Code {result_code} | Reason: {result_desc}")
+
+        # 4. Return an instant HTTP 200 JSON confirmation response back to Daraja's gateway
+        return JsonResponse({"ResultCode": 0, "ResultDesc": "Success"})
     except Exception as e:
-        print(e)
-    return JsonResponse({
-        "ResultCode": 0,
-        "ResultDesc": "Accepted"
-    })
+        import traceback
+        # 1. Capture the exact file, line number, and function where the crash happened
+        detailed_traceback = traceback.format_exc()
+        # 2. Also print it directly to your Django terminal/console for instant viewing
+        print("\n" + "="*50 + "\n[M-PESA DETAILED CRASH LOG]\n" + "="*50)
+        print(detailed_traceback)
+        print("="*50 + "\n")
+        
+        # 3. Temporarily return the exact error in the JSON response so you see it in Postman/your client
+        return JsonResponse({
+            "ResultCode": 1,  # Switched to 1 to tell your testing client it's a failure
+            "ResultDesc": "Crash detected inside view logic",
+            "PythonError": str(e),
+            "LineOfCode": detailed_traceback.split("\n")[-2] if detailed_traceback else "Unknown location"
+        }, status=500)
 
 def home(request):
     collect = Transactions.objects.count()

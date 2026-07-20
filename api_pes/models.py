@@ -19,7 +19,7 @@ class Transactions(models.Model):
     reference_number = models.CharField(max_length=20)
     status = models.CharField(max_length=90, choices=status, default='Pending')
     result_desc = models.CharField(max_length=120, default='Testing')
-
+    is_success = models.BooleanField(default=False, null=True)
     merchant_request_id = models.CharField(max_length=100, null=True, blank=True)
     checkout_request_id = models.CharField(max_length=100, unique=True)
     response_code = models.CharField(max_length=12, null=True, blank=True)
